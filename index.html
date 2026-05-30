@@ -281,8 +281,7 @@
         try {
             const content = await zip.generateAsync({
                 type: "blob",
-                compression: "DEFLATE",
-                compressionOptions: { level: 6 }
+                compression: "STORE"
             });
 
             const url = URL.createObjectURL(content);
