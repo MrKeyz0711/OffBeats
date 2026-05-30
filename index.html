@@ -4,16 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>TuneVault</title>
+    
+    <!-- PWA Support -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#10b981">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="TuneVault">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
         * { font-family: 'Inter', system_ui, sans-serif; }
-        .song-card { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
-        .playing { border: 2px solid #22c55e; background: #052e16; }
-        .modal { animation: modalPop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
-        @keyframes modalPop { 0% { transform: scale(0.9); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
-        .drop-zone { border: 2px dashed #4b5563; transition: all 0.3s; }
-        .drop-zone.dragover { border-color: #22c55e; background: #052e16; }
+        /* ... rest of your styles ... */
     </style>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen">
