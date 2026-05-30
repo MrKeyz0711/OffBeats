@@ -158,6 +158,8 @@
     </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
 <script>
     let songs = [];
     let currentFilter = 'all';
@@ -234,49 +236,148 @@
         renderSongList();
     }
 
-    // ================== Export & Import ==================
-    function exportLibrary() {
-        if (songs.length === 0) return alert("Your library is empty!");
-        const exportData = { version: "1.0", exportDate: new Date().toISOString(), songCount: songs.length, songs: songs };
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `TuneVault_Backup_${new Date().toISOString().slice(0,10)}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
+    // ================== Export Library (ZIP) ==================
+    async function exportLibrary() {
+        if (!songs.length) return alert("Your library is empty!");
+
+        if (songs.length > 150) {
+            if (!confirm(`You have ${songs.length} songs. This may take a while and use a lot of memory. Continue?`)) return;
+        }
+
+        const zip = new JSZip();
+        const audioFolder = zip.folder("audio");
+        const metadata = [];
+
+        for (const song of songs) {
+            const ext = song.data && song.data.includes("data:audio")
+                ? song.data.split(';')[0].split('/')[1]
+                : "mp3";
+
+            const fileName = `${song.id}.${ext}`;
+
+            metadata.push({
+                id: song.id,
+                title: song.title,
+                artist: song.artist,
+                duration: song.duration,
+                isFavorite: song.isFavorite,
+                fileName: fileName
+            });
+
+            if (song.data && song.data.startsWith("data:")) {
+                try {
+                    const base64 = song.data.split(',')[1];
+                    audioFolder.file(fileName, base64, { base64: true });
+                } catch (err) {
+                    console.error(`Failed to add ${song.title}`, err);
+                }
+            } else if (song.data && song.data.startsWith("http")) {
+                metadata[metadata.length - 1].externalUrl = song.data;
+            }
+        }
+
+        zip.file("songs.json", JSON.stringify(metadata, null, 2));
+
+        try {
+            const content = await zip.generateAsync({
+                type: "blob",
+                compression: "DEFLATE",
+                compressionOptions: { level: 6 }
+            });
+
+            const url = URL.createObjectURL(content);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `TuneVault_Backup_${new Date().toISOString().slice(0, 10)}.zip`;
+            a.click();
+            URL.revokeObjectURL(url);
+
+            alert(`✅ Successfully exported ${songs.length} songs!`);
+        } catch (err) {
+            console.error(err);
+            alert("Export failed. Your library might be too large.");
+        }
     }
 
-    function importLibrary() {
-        if (!confirm("This will REPLACE your current library.\nContinue?")) return;
+    // ================== Import Library (ZIP) ==================
+    async function importLibrary() {
+        if (!confirm("This will REPLACE your current library. Continue?")) return;
+
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".json";
-        input.onchange = e => {
+        input.accept = ".zip";
+
+        input.onchange = async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                try {
-                    const data = JSON.parse(event.target.result);
-                    if (!data.songs || !Array.isArray(data.songs)) return alert("Invalid backup file!");
-                    const clearTx = db.transaction(["songs"], "readwrite");
-                    clearTx.objectStore("songs").clear().onsuccess = () => {
-                        songs = data.songs;
-                        songs.forEach(song => saveSongToDB(song));
-                        renderSongList();
-                        alert(`✅ Imported ${songs.length} songs!`);
+
+            try {
+                const zip = await JSZip.loadAsync(file);
+                const jsonFile = zip.file("songs.json");
+                if (!jsonFile) throw new Error("Invalid backup file");
+
+                const jsonText = await jsonFile.async("string");
+                const importedMetadata = JSON.parse(jsonText);
+
+                // Clear old library
+                songs = [];
+                const tx = db.transaction(["songs"], "readwrite");
+                await new Promise(resolve => {
+                    tx.objectStore("songs").clear().onsuccess = resolve;
+                });
+
+                let importedCount = 0;
+
+                for (const meta of importedMetadata) {
+                    const audioFile = zip.file(`audio/${meta.fileName}`);
+                    let dataURL;
+
+                    if (audioFile) {
+                        // Determine MIME type from fileName extension
+                        const ext = meta.fileName.split('.').pop().toLowerCase();
+                        const mimeMap = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', ogg: 'audio/ogg', flac: 'audio/flac', mpeg: 'audio/mpeg' };
+                        const mimeType = mimeMap[ext] || 'audio/mpeg';
+
+                        const rawBlob = await audioFile.async("blob");
+                        // Re-wrap with correct MIME type so readAsDataURL produces a playable data URI
+                        const typedBlob = new Blob([rawBlob], { type: mimeType });
+                        dataURL = await new Promise(resolve => {
+                            const reader = new FileReader();
+                            reader.onload = () => resolve(reader.result);
+                            reader.readAsDataURL(typedBlob);
+                        });
+                    } else if (meta.externalUrl) {
+                        dataURL = meta.externalUrl;
+                    } else {
+                        continue;
+                    }
+
+                    const song = {
+                        id: Number(meta.id),
+                        title: meta.title,
+                        artist: meta.artist,
+                        duration: meta.duration,
+                        isFavorite: meta.isFavorite || false,
+                        data: dataURL
                     };
-                } catch (err) {
-                    alert("Failed to import file.");
+
+                    songs.push(song);
+                    saveSongToDB(song);
+                    importedCount++;
                 }
-            };
-            reader.readAsText(file);
+
+                renderSongList();
+                alert(`✅ Successfully imported ${importedCount} songs!`);
+            } catch (err) {
+                console.error(err);
+                alert("Import failed. The backup file may be corrupted or invalid.");
+            }
         };
+
         input.click();
     }
 
-    // ================== Other Functions (Upload, Player, etc.) ==================
+    // ================== Upload Modal ==================
     function showUploadModal() {
         document.getElementById('upload-modal').classList.remove('hidden');
         document.getElementById('file-info').classList.add('hidden');
@@ -292,6 +393,14 @@
     const fileInput = document.getElementById('modal-file-input');
     dropZone.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        handleFiles(e.dataTransfer.files);
+    });
 
     function handleFiles(files) {
         if (files.length === 1) handleSelectedFile(files[0]);
@@ -352,11 +461,21 @@
 
     // ================== Player ==================
     function playSong(id) {
+        id = Number(id);
         const song = songs.find(s => s.id === id);
         if (!song) return;
+
         currentSong = song;
+
+        // Reuse the same audio object
+        audio.pause();
         audio.src = song.data;
-        audio.play();
+        audio.load();
+
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(err => console.error("Play blocked:", err));
+        }
 
         document.getElementById('player').classList.remove('hidden');
         document.getElementById('now-title').textContent = song.title;
@@ -365,22 +484,37 @@
         document.getElementById('play-pause-btn').innerHTML = '⏸️';
 
         currentIndex = currentPlaylist.findIndex(s => s.id === id);
+
         renderSongList();
     }
 
-    function togglePlay() { if (currentSong) audio.paused ? audio.play() : audio.pause(); }
+    function togglePlay() {
+        if (!currentSong) return;
+
+        if (audio.paused) {
+            const playPromise = audio.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(err => console.log("Blocked:", err));
+            }
+        } else {
+            audio.pause();
+        }
+    }
+
     function playNext() {
         if (!currentPlaylist.length) return;
         let next = currentIndex + 1;
         if (next >= currentPlaylist.length) next = 0;
         playSong(currentPlaylist[next].id);
     }
+
     function playPrevious() {
         if (!currentPlaylist.length) return;
         let prev = currentIndex - 1;
         if (prev < 0) prev = currentPlaylist.length - 1;
         playSong(currentPlaylist[prev].id);
     }
+
     function toggleLoop() {
         isLooping = !isLooping;
         audio.loop = isLooping;
@@ -417,9 +551,30 @@
     }
 
     function loadDemoSongs() {
-        const demos = [{title: "SoundHelix Song #1", artist: "T. Schürger", duration: "3:45", url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"}];
-        demos.forEach(d => songs.unshift({ id: Date.now() + Math.random(), ...d, data: d.url, isFavorite: false }));
+        const demos = [
+            {
+                title: "SoundHelix Song #1",
+                artist: "T. Schürger",
+                duration: "3:45",
+                url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+            }
+        ];
+
+        const newSongs = demos.map(d => ({
+            id: Date.now() + Math.random(),
+            title: d.title,
+            artist: d.artist,
+            duration: d.duration,
+            data: d.url,
+            isFavorite: false,
+            source: "demo"
+        }));
+
+        songs.unshift(...newSongs);
         renderSongList();
+
+        // Rebuild playlist after render
+        currentPlaylist = songs;
     }
 
     function setFilter(filter) {
@@ -432,15 +587,13 @@
     function renderSongList() {
         let filtered = songs;
 
-        // Apply search
         if (currentSearch) {
-            filtered = filtered.filter(song => 
-                song.title.toLowerCase().includes(currentSearch) || 
+            filtered = filtered.filter(song =>
+                song.title.toLowerCase().includes(currentSearch) ||
                 song.artist.toLowerCase().includes(currentSearch)
             );
         }
 
-        // Apply filter (All / Favorites)
         if (currentFilter === 'favorites') {
             filtered = filtered.filter(s => s.isFavorite);
         }
@@ -461,11 +614,11 @@
         document.getElementById('page-subtitle').textContent = `${filtered.length} song${filtered.length !== 1 ? 's' : ''}`;
 
         filtered.forEach((song, i) => {
-            // Desktop
+            // Desktop row
             const tr = document.createElement('tr');
             tr.className = `hover:bg-zinc-800 cursor-pointer ${currentSong?.id === song.id ? 'playing bg-zinc-800' : ''}`;
             tr.innerHTML = `
-                <td class="py-4">${i+1}</td>
+                <td class="py-4">${i + 1}</td>
                 <td class="py-4 font-medium">${song.title}</td>
                 <td class="py-4 text-zinc-400">${song.artist}</td>
                 <td class="py-4 text-right">${song.duration}</td>
@@ -475,7 +628,7 @@
             tr.onclick = () => playSong(song.id);
             tbody.appendChild(tr);
 
-            // Mobile
+            // Mobile card
             const card = document.createElement('div');
             card.className = `song-card bg-zinc-900 rounded-3xl p-4 flex gap-4 ${currentSong?.id === song.id ? 'playing' : ''}`;
             card.innerHTML = `
