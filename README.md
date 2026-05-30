@@ -35,7 +35,9 @@ OffBeats is a PWA; a Progressive Web App. Fancy way of saying: open it in your p
 ⏯️ Full playback controls— play, pause, skip, loop
 📦 One-click import & export as a ZIP
 📱 Installable on iPhone and Android as a home screen app
-
+NEW! Shuffe mode; Just toggle on and your library will shuffle whenever you press "previous" or "forward."
+NEW! Playlists; Make your own playlists for any event!
+NEW! Album covers. When adding a new song to your playlist, you can add an album cover!
 
 
 **🔒 No Accounts. No Logins. No Servers.**
