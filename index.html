@@ -252,10 +252,18 @@
     function deletePlaylistFromDB(id) { if (!dbReady) return; db.transaction(["playlists"],"readwrite").objectStore("playlists").delete(id); }
 
     function loadAllFromDB() {
-        const tx = db.transaction(["songs","playlists"],"readonly");
-        tx.objectStore("songs").getAll().onsuccess = (e) => { songs = e.target.result || []; };
-        tx.objectStore("playlists").getAll().onsuccess = (e) => { playlists = e.target.result || []; };
-        tx.oncomplete = () => { renderSidebar(); renderSongList(); };
+        // Use separate transactions to avoid race condition on mobile
+        // where oncomplete fires before both getAll callbacks complete
+        const songTx = db.transaction(["songs"], "readonly");
+        songTx.objectStore("songs").getAll().onsuccess = (e) => {
+            songs = e.target.result || [];
+            const plTx = db.transaction(["playlists"], "readonly");
+            plTx.objectStore("playlists").getAll().onsuccess = (pe) => {
+                playlists = pe.target.result || [];
+                renderSidebar();
+                renderSongList();
+            };
+        };
     }
 
     // =================== Library Menu ===================
@@ -691,6 +699,46 @@
     document.getElementById('playlist-name-input').addEventListener('keydown', e => { if (e.key==='Enter') createPlaylist(); });
 
     window.onload = () => console.log("%c&#10003; OffBeats Ready","color:#22c55e;font-size:15px");
+
+    // Reload library from DB when app comes back to foreground (fixes iOS background bug)
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && dbReady) {
+            loadAllFromDB();
+        }
+    });
+
+    // Screen Wake Lock — keeps screen on while music is playing
+    // Falls back silently on browsers that don't support it (older iOS)
+    let wakeLock = null;
+
+    async function requestWakeLock() {
+        if ('wakeLock' in navigator) {
+            try {
+                wakeLock = await navigator.wakeLock.request('screen');
+            } catch (e) {
+                // Wake lock denied or not supported — fail silently
+            }
+        }
+    }
+
+    async function releaseWakeLock() {
+        if (wakeLock) {
+            try { await wakeLock.release(); } catch(e) {}
+            wakeLock = null;
+        }
+    }
+
+    // Request wake lock when playing, release when paused/stopped
+    audio.addEventListener('play', () => requestWakeLock());
+    audio.addEventListener('pause', () => releaseWakeLock());
+    audio.addEventListener('ended', () => releaseWakeLock());
+
+    // Re-request wake lock if it gets released by the system (e.g. tab switch)
+    document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible' && !audio.paused) {
+            await requestWakeLock();
+        }
+    });
 </script>
 </body>
 </html>
