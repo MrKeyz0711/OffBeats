@@ -265,10 +265,12 @@
         req.onerror = (ev) => {
             console.error("IndexedDB error:", ev.target.error);
             // Retry with backoff — Safari in low power mode can fail the first open
+            // Only show error banner if DB never successfully opened AND all retries exhausted
             if (dbRetryCount < DB_MAX_RETRIES) {
                 dbRetryCount++;
                 setTimeout(openDB, 300 * dbRetryCount);
-            } else {
+            } else if (!dbReady) {
+                // Only show error if we never had a successful open
                 showDBError();
             }
         };
@@ -281,6 +283,7 @@
     }
 
     function showDBError() {
+        if (dbReady) return; // DB loaded fine, don't show error
         const el = document.createElement('div');
         el.style.cssText = 'position:fixed;top:80px;left:50%;transform:translateX(-50%);background:#7f1d1d;color:#fff;padding:12px 20px;border-radius:16px;z-index:99999;font-size:13px;text-align:center;max-width:280px;';
         el.innerHTML = 'Could not load library.<br><button onclick="location.reload()" style="margin-top:6px;background:#ef4444;border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;">Tap to Retry</button>';
