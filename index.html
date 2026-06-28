@@ -236,34 +236,86 @@
     let pendingArtData = null;
     let addToPlaylistSongId = null;
     let db, dbReady = false;
+    let dbRetryCount = 0;
+    const DB_MAX_RETRIES = 5;
 
     // =================== IndexedDB ===================
-    const dbRequest = indexedDB.open("OffBeatsDB", 2);
-    dbRequest.onupgradeneeded = (ev) => {
-        db = ev.target.result;
-        if (!db.objectStoreNames.contains("songs")) db.createObjectStore("songs", { keyPath: "id" });
-        if (!db.objectStoreNames.contains("playlists")) db.createObjectStore("playlists", { keyPath: "id" });
-    };
-    dbRequest.onsuccess = (ev) => { db = ev.target.result; dbReady = true; loadAllFromDB(); };
+    function openDB() {
+        const req = indexedDB.open("OffBeatsDB", 2);
 
-    function saveSongToDB(s) { if (!dbReady) return; db.transaction(["songs"],"readwrite").objectStore("songs").put(s); }
-    function deleteSongFromDB(id) { if (!dbReady) return; db.transaction(["songs"],"readwrite").objectStore("songs").delete(id); }
-    function savePlaylistToDB(p) { if (!dbReady) return; db.transaction(["playlists"],"readwrite").objectStore("playlists").put(p); }
-    function deletePlaylistFromDB(id) { if (!dbReady) return; db.transaction(["playlists"],"readwrite").objectStore("playlists").delete(id); }
+        req.onupgradeneeded = (ev) => {
+            const d = ev.target.result;
+            if (!d.objectStoreNames.contains("songs")) d.createObjectStore("songs", { keyPath: "id" });
+            if (!d.objectStoreNames.contains("playlists")) d.createObjectStore("playlists", { keyPath: "id" });
+        };
+
+        req.onsuccess = (ev) => {
+            db = ev.target.result;
+            dbReady = true;
+            dbRetryCount = 0;
+
+            // Safari fires "versionchange" and closes DB when another tab opens it
+            // Re-open automatically so the app doesn't go dead
+            db.onversionchange = () => { db.close(); dbReady = false; openDB(); };
+            db.onclose = () => { dbReady = false; if (dbRetryCount < DB_MAX_RETRIES) { dbRetryCount++; setTimeout(openDB, 300 * dbRetryCount); } };
+
+            loadAllFromDB();
+        };
+
+        req.onerror = (ev) => {
+            console.error("IndexedDB error:", ev.target.error);
+            // Retry with backoff — Safari in low power mode can fail the first open
+            if (dbRetryCount < DB_MAX_RETRIES) {
+                dbRetryCount++;
+                setTimeout(openDB, 300 * dbRetryCount);
+            } else {
+                showDBError();
+            }
+        };
+
+        req.onblocked = () => {
+            // Another tab is blocking the upgrade — close and retry
+            console.warn("IndexedDB blocked");
+            if (dbRetryCount < DB_MAX_RETRIES) { dbRetryCount++; setTimeout(openDB, 500); }
+        };
+    }
+
+    function showDBError() {
+        const el = document.createElement('div');
+        el.style.cssText = 'position:fixed;top:80px;left:50%;transform:translateX(-50%);background:#7f1d1d;color:#fff;padding:12px 20px;border-radius:16px;z-index:99999;font-size:13px;text-align:center;max-width:280px;';
+        el.innerHTML = 'Could not load library.<br><button onclick="location.reload()" style="margin-top:6px;background:#ef4444;border:none;color:#fff;padding:4px 12px;border-radius:8px;cursor:pointer;">Tap to Retry</button>';
+        document.body.appendChild(el);
+    }
+
+    openDB();
+
+    function saveSongToDB(s) { if (!dbReady) return; try { db.transaction(["songs"],"readwrite").objectStore("songs").put(s); } catch(e) { console.error(e); } }
+    function deleteSongFromDB(id) { if (!dbReady) return; try { db.transaction(["songs"],"readwrite").objectStore("songs").delete(id); } catch(e) { console.error(e); } }
+    function savePlaylistToDB(p) { if (!dbReady) return; try { db.transaction(["playlists"],"readwrite").objectStore("playlists").put(p); } catch(e) { console.error(e); } }
+    function deletePlaylistFromDB(id) { if (!dbReady) return; try { db.transaction(["playlists"],"readwrite").objectStore("playlists").delete(id); } catch(e) { console.error(e); } }
 
     function loadAllFromDB() {
-        // Use separate transactions to avoid race condition on mobile
-        // where oncomplete fires before both getAll callbacks complete
-        const songTx = db.transaction(["songs"], "readonly");
-        songTx.objectStore("songs").getAll().onsuccess = (e) => {
-            songs = e.target.result || [];
-            const plTx = db.transaction(["playlists"], "readonly");
-            plTx.objectStore("playlists").getAll().onsuccess = (pe) => {
-                playlists = pe.target.result || [];
-                renderSidebar();
-                renderSongList();
+        if (!dbReady) return;
+        try {
+            const songTx = db.transaction(["songs"], "readonly");
+            songTx.objectStore("songs").getAll().onsuccess = (e) => {
+                songs = e.target.result || [];
+                try {
+                    const plTx = db.transaction(["playlists"], "readonly");
+                    plTx.objectStore("playlists").getAll().onsuccess = (pe) => {
+                        playlists = pe.target.result || [];
+                        renderSidebar();
+                        renderSongList();
+                    };
+                    plTx.onerror = () => { renderSidebar(); renderSongList(); };
+                } catch(e) { renderSidebar(); renderSongList(); }
             };
-        };
+            songTx.onerror = (e) => console.error("Song load error:", e.target.error);
+        } catch(e) {
+            console.error("loadAllFromDB failed:", e);
+            // DB transaction failed mid-session — reopen
+            if (dbRetryCount < DB_MAX_RETRIES) { dbRetryCount++; dbReady = false; setTimeout(openDB, 300); }
+        }
     }
 
     // =================== Library Menu ===================
